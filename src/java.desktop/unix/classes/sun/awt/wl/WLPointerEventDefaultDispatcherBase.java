@@ -28,6 +28,11 @@ package sun.awt.wl;
 import sun.awt.MouseWheelRoundRotationsAccumulator;
 import sun.util.logging.PlatformLogger;
 
+import static sun.awt.MouseWheelRoundRotationsAccumulator.STEPS120_MWE_SCROLL_AMOUNT;
+import static sun.awt.MouseWheelRoundRotationsAccumulator.TOUCHPAD_PIXELS_TO_MWE_ROTATIONS_FACTOR;
+import static sun.awt.MouseWheelRoundRotationsAccumulator.VECTOR_LENGTH_TO_MWE_ROTATIONS_FACTOR;
+import static sun.awt.MouseWheelRoundRotationsAccumulator.VECTOR_MWE_SCROLL_AMOUNT;
+
 import java.awt.EventQueue;
 import java.awt.event.KeyEvent;
 import java.awt.event.MouseEvent;
@@ -36,6 +41,22 @@ import java.awt.event.MouseWheelEvent;
 
 abstract class WLPointerEventDefaultDispatcherBase {
     protected static final PlatformLogger log = PlatformLogger.getLogger("sun.awt.wl.WLPointerEventDefaultDispatcherBase");
+    private static final double TOUCHPAD_SCROLL_SPEED = doubleProperty("sun.awt.wl.TouchpadScrolling.speed", 3.0);
+
+    private static double doubleProperty(final String name, final double defaultValue) {
+        final String value = System.getProperty(name);
+        if (value != null) {
+            try {
+                final double result = Double.parseDouble(value);
+                if (result > 0 && Double.isFinite(result)) {
+                    return result;
+                }
+            } catch (NumberFormatException ignored) {
+            }
+            log.warning("Invalid value of " + name + ": " + value + ", using " + defaultValue);
+        }
+        return defaultValue;
+    }
 
 
     public final class KineticScroller extends WLKineticScrollerBase {
@@ -59,6 +80,8 @@ abstract class WLPointerEventDefaultDispatcherBase {
                 awtAbsX, awtAbsY,
                 awtModifiers,
                 false,
+                // kinetic scrolling is only started by touchpad scrolling
+                true,
                 xAxisVector,
                 xAxisSteps120Value,
                 yAxisVector,
@@ -138,9 +161,16 @@ abstract class WLPointerEventDefaultDispatcherBase {
         int     awtScrollType,
         int     awtScrollAmount,
         int     awtWheelRotation,
-        double  awtPreciseWheelRotation
+        double  awtPreciseWheelRotation,
+        boolean awtCausedByTouchEvent
     );
 
+    /**
+     * @param isTouchpadScrolling {@code true} if the vector values come from a touchpad
+     *                            ({@code wl_pointer::axis_source == finger}) or from a kinetic scrolling.
+     *                            Such {@link MouseWheelEvent}s are marked as caused by a touch event,
+     *                            like on Windows, so that applications can tell them from the wheel ones.
+     */
     protected void notifyRawPointerAxisEvent(
         final long    awtWhen,
         final int     awtX,
@@ -149,6 +179,7 @@ abstract class WLPointerEventDefaultDispatcherBase {
         final int     awtAbsY,
         final int     awtModifiers,
         final boolean awtIsPopupTrigger,
+        final boolean isTouchpadScrolling,
 
         final double xAxisVector,
         final int    xAxisSteps120Value,
@@ -158,17 +189,7 @@ abstract class WLPointerEventDefaultDispatcherBase {
         // Current implementation is not thread-safe
         assert EventQueue.isDispatchThread() : "Method must only be invoked on EDT";
 
-        // WLPointerEvent -> MouseWheelEvent conversion constants.
-        // Please keep in mind that they're all related, so that changing one may require adjusting the others
-        //   (or altering this conversion routine).
-
-        // XToolkit uses 3 units per a wheel step, so do we here to preserve the user experience
-        final int  STEPS120_MWE_SCROLL_AMOUNT = 3;
-        // For touchpad scrolling, it's worth being able to scroll the minimum possible number of units (i.e. 1)
-        final int    VECTOR_MWE_SCROLL_AMOUNT = 1;
-        // 0.28 has experimentally been found as providing a good balance between
-        //   wheel scrolling sensitivity and touchpad scrolling sensitivity
-        final double VECTOR_LENGTH_TO_MWE_ROTATIONS_FACTOR = 0.28;
+        // WLPointerEvent -> MouseWheelEvent conversion constants live in MouseWheelRoundRotationsAccumulator.
 
         // Converting the X axis Wayland values to MouseWheelEvent parameters.
 
@@ -176,6 +197,7 @@ abstract class WLPointerEventDefaultDispatcherBase {
         final double  xAxisMWEPreciseRotations;
         final int     xAxisMWERoundRotations;
         final int     xAxisMWEScrollAmount;
+        final boolean xAxisMWECausedByTouchEvent;
 
         // wl_pointer::axis_discrete/axis_value120 are preferred over wl_pointer::axis because
         //   they're closer to MouseWheelEvent by their nature.
@@ -188,11 +210,15 @@ abstract class WLPointerEventDefaultDispatcherBase {
             // However, neither Gnome nor KDE currently provide such a setting, making it difficult to test
             //   how well such an approach would work. So leaving it as is for now.
             xAxisMWEScrollAmount     = STEPS120_MWE_SCROLL_AMOUNT;
+            xAxisMWECausedByTouchEvent = false;
         } else {
             xAxisDirectionSign       = (int)Math.signum(xAxisVector);
-            xAxisMWEPreciseRotations = xAxisVector * VECTOR_LENGTH_TO_MWE_ROTATIONS_FACTOR;
+            xAxisMWEPreciseRotations = xAxisVector * (isTouchpadScrolling
+                ? TOUCHPAD_SCROLL_SPEED * TOUCHPAD_PIXELS_TO_MWE_ROTATIONS_FACTOR
+                : VECTOR_LENGTH_TO_MWE_ROTATIONS_FACTOR);
             xAxisMWERoundRotations   = xAxisWheelRoundRotationsAccumulator.accumulateFractionalRotations(xAxisMWEPreciseRotations);
             xAxisMWEScrollAmount     = VECTOR_MWE_SCROLL_AMOUNT;
+            xAxisMWECausedByTouchEvent = isTouchpadScrolling;
         }
 
         // Converting the Y axis Wayland values to MouseWheelEvent parameters.
@@ -202,17 +228,22 @@ abstract class WLPointerEventDefaultDispatcherBase {
         final double  yAxisMWEPreciseRotations;
         final int     yAxisMWERoundRotations;
         final int     yAxisMWEScrollAmount;
+        final boolean yAxisMWECausedByTouchEvent;
 
         if (yAxisSteps120Value != 0) {
             yAxisDirectionSign       = Integer.signum(yAxisSteps120Value);
             yAxisMWEPreciseRotations = yAxisSteps120Value / 120d;
             yAxisMWERoundRotations   = yAxisWheelRoundRotationsAccumulator.accumulateSteps120Rotations(yAxisSteps120Value);
             yAxisMWEScrollAmount     = STEPS120_MWE_SCROLL_AMOUNT;
+            yAxisMWECausedByTouchEvent = false;
         } else {
             yAxisDirectionSign       = (int)Math.signum(yAxisVector);
-            yAxisMWEPreciseRotations = yAxisVector * VECTOR_LENGTH_TO_MWE_ROTATIONS_FACTOR;
+            yAxisMWEPreciseRotations = yAxisVector * (isTouchpadScrolling
+                ? TOUCHPAD_SCROLL_SPEED * TOUCHPAD_PIXELS_TO_MWE_ROTATIONS_FACTOR
+                : VECTOR_LENGTH_TO_MWE_ROTATIONS_FACTOR);
             yAxisMWERoundRotations   = yAxisWheelRoundRotationsAccumulator.accumulateFractionalRotations(yAxisMWEPreciseRotations);
             yAxisMWEScrollAmount     = VECTOR_MWE_SCROLL_AMOUNT;
+            yAxisMWECausedByTouchEvent = isTouchpadScrolling;
         }
 
         if (log.isLoggable(PlatformLogger.Level.FINE)) {
@@ -256,17 +287,20 @@ abstract class WLPointerEventDefaultDispatcherBase {
         final int    horizontalMWEScrollAmount;
         final double horizontalMWEPreciseRotations;
         final int    horizontalMWERoundRotations;
+        final boolean horizontalMWECausedByTouchEvent;
 
         // These values decide whether a vertical scrolling MouseWheelEvent will be created and posted
         final int    verticalMWEScrollAmount;
         final double verticalMWEPreciseRotations;
         final int    verticalMWERoundRotations;
+        final boolean verticalMWECausedByTouchEvent;
 
         if (isShiftPressed) {
             // Pressing Shift makes only a horizontal scrolling MouseWheelEvent possible
             verticalMWEScrollAmount     = 0;
             verticalMWEPreciseRotations = 0;
             verticalMWERoundRotations   = 0;
+            verticalMWECausedByTouchEvent = false;
 
             // Now we're deciding values of which axis will be used to generate a horizontal MouseWheelEvent
 
@@ -290,10 +324,12 @@ abstract class WLPointerEventDefaultDispatcherBase {
                     horizontalMWEScrollAmount     = xAxisMWEScrollAmount;
                     horizontalMWEPreciseRotations = xAxisMWEPreciseRotations;
                     horizontalMWERoundRotations   = xAxisMWERoundRotations;
+                    horizontalMWECausedByTouchEvent = xAxisMWECausedByTouchEvent;
                 } else {
                     horizontalMWEScrollAmount     = yAxisMWEScrollAmount;
                     horizontalMWEPreciseRotations = yAxisMWEPreciseRotations;
                     horizontalMWERoundRotations   = yAxisMWERoundRotations;
+                    horizontalMWECausedByTouchEvent = yAxisMWECausedByTouchEvent;
                 }
             } else if (yAxisMWERoundRotations != 0 || yAxisMWEPreciseRotations != 0) {
                 // The scrolling directions contradict.
@@ -302,10 +338,12 @@ abstract class WLPointerEventDefaultDispatcherBase {
                 horizontalMWEScrollAmount     = yAxisMWEScrollAmount;
                 horizontalMWEPreciseRotations = yAxisMWEPreciseRotations;
                 horizontalMWERoundRotations   = yAxisMWERoundRotations;
+                horizontalMWECausedByTouchEvent = yAxisMWECausedByTouchEvent;
             } else {
                 horizontalMWEScrollAmount     = xAxisMWEScrollAmount;
                 horizontalMWEPreciseRotations = xAxisMWEPreciseRotations;
                 horizontalMWERoundRotations   = xAxisMWERoundRotations;
+                horizontalMWECausedByTouchEvent = xAxisMWECausedByTouchEvent;
             }
         } else {
             // Shift is not pressed, so both horizontal and vertical MouseWheelEvents are possible.
@@ -313,10 +351,12 @@ abstract class WLPointerEventDefaultDispatcherBase {
             horizontalMWEScrollAmount     = xAxisMWEScrollAmount;
             horizontalMWEPreciseRotations = xAxisMWEPreciseRotations;
             horizontalMWERoundRotations   = xAxisMWERoundRotations;
+            horizontalMWECausedByTouchEvent = xAxisMWECausedByTouchEvent;
 
             verticalMWEScrollAmount       = yAxisMWEScrollAmount;
             verticalMWEPreciseRotations   = yAxisMWEPreciseRotations;
             verticalMWERoundRotations     = yAxisMWERoundRotations;
+            verticalMWECausedByTouchEvent = yAxisMWECausedByTouchEvent;
         }
 
         if (verticalMWERoundRotations != 0 || verticalMWEPreciseRotations != 0) {
@@ -334,7 +374,8 @@ abstract class WLPointerEventDefaultDispatcherBase {
                 MouseWheelEvent.WHEEL_UNIT_SCROLL,
                 verticalMWEScrollAmount,
                 verticalMWERoundRotations,
-                verticalMWEPreciseRotations
+                verticalMWEPreciseRotations,
+                verticalMWECausedByTouchEvent
             );
         }
 
@@ -353,7 +394,8 @@ abstract class WLPointerEventDefaultDispatcherBase {
                 MouseWheelEvent.WHEEL_UNIT_SCROLL,
                 horizontalMWEScrollAmount,
                 horizontalMWERoundRotations,
-                horizontalMWEPreciseRotations
+                horizontalMWEPreciseRotations,
+                horizontalMWECausedByTouchEvent
             );
         }
     }
@@ -364,6 +406,8 @@ abstract class WLPointerEventDefaultDispatcherBase {
     protected final MouseWheelRoundRotationsAccumulator xAxisWheelRoundRotationsAccumulator = new MouseWheelRoundRotationsAccumulator();
     protected final MouseWheelRoundRotationsAccumulator yAxisWheelRoundRotationsAccumulator = new MouseWheelRoundRotationsAccumulator();
     protected final KineticScroller kineticScroller = WLToolkit.isKineticScrollingEnabled() ? new KineticScroller() : null;
+    // axis_source is not always sent in every frame, so keep the last one
+    private WLPointerEvent.AxisSourceType lastAxisSource = null;
 
 
     private void processPointerEnterEventIfAny(
@@ -502,6 +546,10 @@ abstract class WLPointerEventDefaultDispatcherBase {
 
         final int modifiers = newInputState.getModifiers();
 
+        if (e.hasAxisSourceEvent()) {
+            this.lastAxisSource = WLPointerEvent.AxisSourceType.recognizedOrNull(e.getAxisSource());
+        }
+
         if (e.hasAnyAxisLikeEvents()) {
             final double xAxisVector = e.xAxisHasVectorValue() ? e.getXAxisVectorValue() : 0;
             final int xAxisSteps120Value = e.xAxisHasSteps120Value() ? e.getXAxisSteps120Value() : 0;
@@ -517,6 +565,7 @@ abstract class WLPointerEventDefaultDispatcherBase {
                 awtAbsY,
                 modifiers,
                 false,
+                this.lastAxisSource == WLPointerEvent.AxisSourceType.FINGER,
                 xAxisVector,
                 xAxisSteps120Value,
                 yAxisVector,

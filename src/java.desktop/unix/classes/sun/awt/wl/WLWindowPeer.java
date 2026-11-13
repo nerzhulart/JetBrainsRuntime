@@ -131,7 +131,8 @@ public class WLWindowPeer extends WLComponentPeer implements SurfacePixelGrabber
             int awtScrollType,
             int awtScrollAmount,
             int awtWheelRotation,
-            double awtPreciseWheelRotation
+            double awtPreciseWheelRotation,
+            boolean awtCausedByTouchEvent
         ) {
             WLWindowPeer.this.getMouseEventDispatcher().notifyMouseWheelEvent(
                 awtWhen,
@@ -143,7 +144,8 @@ public class WLWindowPeer extends WLComponentPeer implements SurfacePixelGrabber
                 awtScrollType,
                 awtScrollAmount,
                 awtWheelRotation,
-                awtPreciseWheelRotation
+                awtPreciseWheelRotation,
+                awtCausedByTouchEvent
             );
         }
     };

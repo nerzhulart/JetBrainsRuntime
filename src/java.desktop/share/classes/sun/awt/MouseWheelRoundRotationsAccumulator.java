@@ -33,6 +33,18 @@ package sun.awt;
  *   (instead of 4 tries to generate a MouseWheelEvent with wheelRotation=0 due to double->int conversion)
  */
 public class MouseWheelRoundRotationsAccumulator {
+    public static final int STEPS120_MWE_SCROLL_AMOUNT = 3;
+    public static final int VECTOR_MWE_SCROLL_AMOUNT = 1;
+    public static final double VECTOR_LENGTH_TO_MWE_ROTATIONS_FACTOR = 0.28;
+
+    /**
+     * Number of mouse wheel rotations per logical pixel for touchpad scrolling.
+     * With {@code WHEEL_UNIT_SCROLL} and a scroll amount of 1, this makes the
+     * wheel rotation equal to the touchpad pixel delta multiplied by 0.1, as
+     * on Windows and macOS. Such events are marked as caused by touch input.
+     */
+    public static final double TOUCHPAD_PIXELS_TO_MWE_ROTATIONS_FACTOR = 0.1;
+
     /**
      * This method is intended to accumulate fractional numbers of wheel rotations.
      *

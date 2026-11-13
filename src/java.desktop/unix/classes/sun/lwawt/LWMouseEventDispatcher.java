@@ -32,6 +32,8 @@ import java.awt.Window;
 import java.awt.event.MouseEvent;
 import java.awt.event.MouseWheelEvent;
 
+import sun.awt.AWTAccessor;
+
 public class LWMouseEventDispatcher {
     private final LWWindowPeerAPI windowPeer;
 
@@ -239,6 +241,19 @@ public class LWMouseEventDispatcher {
                                       int modifiers, int clickCount, boolean popupTrigger,
                                       int scrollType, int scrollAmount,
                                       int wheelRotation, double preciseWheelRotation) {
+        notifyMouseWheelEvent(when, x, y, absX, absY, modifiers, clickCount, popupTrigger,
+                scrollType, scrollAmount, wheelRotation, preciseWheelRotation, false);
+    }
+
+    /**
+     * @param causedByTouchEvent {@code true} if the event comes from a touchpad (finger) scrolling
+     *                           or from a kinetic scrolling, like on Windows with DirectManipulation
+     */
+    public void notifyMouseWheelEvent(long when, int x, int y, int absX, int absY,
+                                      int modifiers, int clickCount, boolean popupTrigger,
+                                      int scrollType, int scrollAmount,
+                                      int wheelRotation, double preciseWheelRotation,
+                                      boolean causedByTouchEvent) {
         // TODO: could we just use the last mouse event target here?
         Rectangle r = windowPeer.getBounds();
         // findPeerAt() expects parent coordinates
@@ -249,14 +264,18 @@ public class LWMouseEventDispatcher {
 
         Point lp = targetPeer.windowToLocal(x, y, windowPeer);
         // TODO: fill "bdata" member of AWTEvent
-        windowPeer.postMouseEvent(new MouseWheelEvent(targetPeer.getTarget(),
+        final MouseWheelEvent event = new MouseWheelEvent(targetPeer.getTarget(),
                 MouseEvent.MOUSE_WHEEL,
                 when, modifiers,
                 lp.x, lp.y,
                 absX, absY,
                 clickCount, popupTrigger,
                 scrollType, scrollAmount,
-                wheelRotation, preciseWheelRotation));
+                wheelRotation, preciseWheelRotation);
+        if (causedByTouchEvent) {
+            AWTAccessor.getMouseEventAccessor().setCausedByTouchEvent(event, true);
+        }
+        windowPeer.postMouseEvent(event);
 
     }
 
